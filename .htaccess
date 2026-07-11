@@ -1,0 +1,6 @@
+RewriteEngine On
+
+# Route /all-products to all-products.php
+RewriteRule ^all-products$ all-products.php [L]
+
+
