@@ -1,7 +1,8 @@
 <?php
 // cart.php (single-container)
 declare(strict_types=1);
-session_start();
+require_once __DIR__ . '/auth.php';
+start_auth_session();
 require 'db.php';
 
 // ---------- Auth ----------
@@ -543,7 +544,7 @@ $query->close();
               <?php foreach ($items as $it): ?>
                 <tr data-cart-id="<?= (int)$it['id'] ?>" data-price="<?= htmlspecialchars($it['price']) ?>">
                   <td>
-                    <input type="checkbox" class="row-check" value="<?= (int)$it['id'] ?>">
+                    <input type="checkbox" class="row-check" value="<?= (int)$it['id'] ?>" checked>
                   </td>
                   <td>
                     <div class="prodCell">
@@ -671,6 +672,7 @@ $query->close();
     // Recompute selected block
     function recomputeSelected() {
       const rows = [...document.querySelectorAll('#cart-table tbody tr')];
+      const checkedBoxes = [...document.querySelectorAll('.row-check')];
       let selectedTotal = 0;
       let selectedCount = 0;
       rows.forEach(tr => {
@@ -682,6 +684,9 @@ $query->close();
           selectedCount += qty;
         }
       });
+      if (selectAll) {
+        selectAll.checked = checkedBoxes.length > 0 && checkedBoxes.every(c => c.checked);
+      }
       selectedCountEl.textContent = selectedCount;
       selectedTotalEl.textContent = fmtBDT(selectedTotal);
       rebuildSelectedInputs();
@@ -864,6 +869,10 @@ $query->close();
     });
 
     // Initial draw
+    if (selectAll) {
+      const allRows = [...document.querySelectorAll('.row-check')];
+      selectAll.checked = allRows.length > 0 && allRows.every(c => c.checked);
+    }
     recomputeSelected();
   </script>
 </body>

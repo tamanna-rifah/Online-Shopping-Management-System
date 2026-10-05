@@ -1152,48 +1152,6 @@ $currentPage = basename($_SERVER['PHP_SELF']);
                 </a>
 
 
-                <!-- ALL ORDERS -->
-
-                <a
-                    href="admin_orders.php"
-
-                    <?= $currentPage === 'admin_orders.php'
-                        ? 'aria-current="page"'
-                        : ''
-                    ?>>
-
-                    <svg
-                        viewBox="0 0 24 24"
-                        fill="currentColor">
-
-                        <path
-                            d="
-                        M3 4
-                        h18
-                        v4
-                        H3
-                        V4z
-
-                        M5 10
-                        h14
-                        v10
-                        H5
-                        V10z
-
-                        M8 13
-                        v2
-                        h8
-                        v-2
-                        H8z
-                        " />
-
-                    </svg>
-
-                    All Orders
-
-                </a>
-
-
                 <!-- SALES & COMMISSION -->
 
                 <a

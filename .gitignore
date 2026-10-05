@@ -1,0 +1,19 @@
+# API / Secret credentials
+ai_config.php
+sslcommerz_config.php
+bkash_credentials.php
+.env
+.env.*
+
+# Local uploaded files
+uploads/
+
+# IDE / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+bkash_config.php
+
+# Logs
+*.log

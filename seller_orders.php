@@ -42,6 +42,12 @@ $errorMessage = '';
 */
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
+    $successMessage =
+    'Order #' .
+    $orderId .
+    ' status updated to ' .
+    ucfirst($newStatus) .
+    '.';
 
     $postedCsrf = (string) ($_POST['csrf'] ?? '');
 
@@ -133,20 +139,115 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
         }
     }
 }
+if (
+    isset($_GET['updated']) &&
+    isset($_GET['delivery'])
+) {
+    $successMessage =
+        'Order #' .
+        (int) $_GET['updated'] .
+        ' delivery status updated to ' .
+        htmlspecialchars(
+            (string) $_GET['delivery'],
+            ENT_QUOTES,
+            'UTF-8'
+        ) .
+        '.';
+}
 
 /*
 |--------------------------------------------------------------------------
 | GET ONLY ORDERS FOR THIS SELLER'S PRODUCTS
 |--------------------------------------------------------------------------
 */
+/*
+|--------------------------------------------------------------------------
+| UPDATE PAYMENT STATUS
+|--------------------------------------------------------------------------
+*/
 
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['update_payment_status'])
+) {
+
+    $postedCsrf = (string) ($_POST['csrf'] ?? '');
+
+    if (!hash_equals($_SESSION['seller_csrf'], $postedCsrf)) {
+
+        $errorMessage =
+            'Invalid request. Please refresh and try again.';
+
+    } else {
+
+        $orderId = (int) ($_POST['order_id'] ?? 0);
+
+        $newPaymentStatus = strtolower(
+            trim(
+                (string) (
+                    $_POST['payment_status'] ?? ''
+                )
+            )
+        );
+
+        if (
+            $orderId <= 0 ||
+            !in_array(
+                $newPaymentStatus,
+                ['pending', 'success'],
+                true
+            )
+        ) {
+
+            $errorMessage =
+                'Invalid payment status.';
+
+        } else {
+
+            $updatePayment = $conn->prepare("
+                UPDATE orders
+                SET payment_status = ?
+                WHERE id = ?
+            ");
+
+            $updatePayment->bind_param(
+                'si',
+                $newPaymentStatus,
+                $orderId
+            );
+
+            if ($updatePayment->execute()) {
+
+                $successMessage =
+                    'Order #' .
+                    $orderId .
+                    ' payment updated to ' .
+                    (
+                        $newPaymentStatus === 'success'
+                            ? 'Paid'
+                            : 'Unpaid'
+                    ) .
+                    '.';
+
+            } else {
+
+                $errorMessage =
+                    'Failed to update payment status.';
+            }
+
+            $updatePayment->close();
+        }
+    }
+}
 $stmt = $conn->prepare("
     SELECT
-        o.id AS order_id,
-        o.user_email,
-        o.payment_method,
-        o.status,
-        o.created_at,
+    o.id AS order_id,
+    o.user_email,
+    o.payment_method,
+    o.payment_status,
+    o.status,
+    o.delivery_status,
+    o.created_at,
 
         p.id AS product_id,
         p.name AS product_name,
@@ -179,6 +280,229 @@ $orders = $result
     : [];
 
 $stmt->close();
+/*
+|--------------------------------------------------------------------------
+| UPDATE DELIVERY STATUS
+|--------------------------------------------------------------------------
+*/
+
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['update_delivery_status'])
+) {
+
+    $postedCsrf = (string) ($_POST['csrf'] ?? '');
+
+    if (!hash_equals($_SESSION['seller_csrf'], $postedCsrf)) {
+
+        $errorMessage =
+            'Invalid request. Please refresh and try again.';
+
+    } else {
+
+        $orderId = (int) ($_POST['order_id'] ?? 0);
+
+        $newDeliveryStatus = strtolower(
+            trim(
+                (string) (
+                    $_POST['delivery_status'] ?? ''
+                )
+            )
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Delivery status labels
+        |--------------------------------------------------------------------------
+        */
+
+        $deliveryLabels = [
+            'order_placed'     => 'Order Placed',
+            'processing'       => 'Processing',
+            'packed'           => 'Packed',
+            'shipped'          => 'Shipped',
+            'out_for_delivery' => 'Out for Delivery',
+            'delivered'        => 'Delivered'
+        ];
+
+        /*
+        |--------------------------------------------------------------------------
+        | Validate
+        |--------------------------------------------------------------------------
+        */
+
+        if (
+            $orderId <= 0 ||
+            !array_key_exists(
+                $newDeliveryStatus,
+                $deliveryLabels
+            )
+        ) {
+
+            $errorMessage =
+                'Invalid delivery status.';
+
+        } else {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Check seller owns this order
+            |--------------------------------------------------------------------------
+            */
+
+            $checkStmt = $conn->prepare("
+                SELECT COUNT(*) AS total
+                FROM order_items oi
+                INNER JOIN products p
+                    ON p.id = oi.product_id
+                WHERE oi.order_id = ?
+                  AND p.seller_id = ?
+            ");
+
+            $checkStmt->bind_param(
+                'ii',
+                $orderId,
+                $sellerId
+            );
+
+            $checkStmt->execute();
+
+            $checkRow =
+                $checkStmt
+                    ->get_result()
+                    ->fetch_assoc();
+
+            $checkStmt->close();
+
+            if ((int) ($checkRow['total'] ?? 0) <= 0) {
+
+                $errorMessage =
+                    'You cannot update this delivery.';
+
+            } else {
+
+                /*
+                |--------------------------------------------------------------------------
+                | Get current delivery status
+                |--------------------------------------------------------------------------
+                */
+
+                $oldStmt = $conn->prepare("
+                    SELECT delivery_status
+                    FROM orders
+                    WHERE id = ?
+                    LIMIT 1
+                ");
+
+                $oldStmt->bind_param(
+                    'i',
+                    $orderId
+                );
+
+                $oldStmt->execute();
+
+                $oldRow =
+                    $oldStmt
+                        ->get_result()
+                        ->fetch_assoc();
+
+                $oldStmt->close();
+
+                $oldDeliveryStatus =
+                    (string) (
+                        $oldRow['delivery_status']
+                        ?? 'order_placed'
+                    );
+
+                /*
+                |--------------------------------------------------------------------------
+                | UPDATE DELIVERY STATUS
+                |--------------------------------------------------------------------------
+                */
+
+                $updateDelivery = $conn->prepare("
+                    UPDATE orders
+                    SET delivery_status = ?
+                    WHERE id = ?
+                ");
+
+                $updateDelivery->bind_param(
+                    'si',
+                    $newDeliveryStatus,
+                    $orderId
+                );
+
+                if ($updateDelivery->execute()) {
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Save tracking history
+                    |--------------------------------------------------------------------------
+                    */
+
+                    if (
+                        $oldDeliveryStatus
+                        !== $newDeliveryStatus
+                    ) {
+
+                        $note =
+                            $deliveryLabels[
+                                $newDeliveryStatus
+                            ];
+
+                        $trackingStmt = $conn->prepare("
+                            INSERT INTO order_tracking
+                            (
+                                order_id,
+                                status,
+                                note
+                            )
+                            VALUES (?, ?, ?)
+                        ");
+
+                        $trackingStmt->bind_param(
+                            'iss',
+                            $orderId,
+                            $newDeliveryStatus,
+                            $note
+                        );
+
+                        $trackingStmt->execute();
+                        $trackingStmt->close();
+                    }
+
+                    $updateDelivery->close();
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | REDIRECT AFTER UPDATE
+                    |--------------------------------------------------------------------------
+                    */
+
+                    header(
+                        'Location: seller_orders.php?updated=' .
+                        $orderId .
+                        '&delivery=' .
+                        urlencode(
+                            $deliveryLabels[
+                                $newDeliveryStatus
+                            ]
+                        )
+                    );
+
+                    exit();
+
+                } else {
+
+                    $errorMessage =
+                        'Failed to update delivery status.';
+
+                    $updateDelivery->close();
+                }
+            }
+        }
+    }
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -208,11 +532,10 @@ ob_start();
     }
 
     /* Give the action column enough room */
-    .table th:last-child,
-    .table td:last-child {
-        min-width: 310px;
-    }
-
+   .table th:last-child,
+.table td:last-child {
+    min-width: 380px;
+}
     .status-actions {
         display: grid;
         grid-template-columns: repeat(3, max-content);
@@ -278,6 +601,79 @@ ob_start();
             0 0 0 2px var(--panel),
             0 0 0 4px #38bdf8;
     }
+    .payment-actions {
+    display: flex;
+    gap: 7px;
+    align-items: center;
+}
+
+.payment-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    padding: 7px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.payment-btn.paid {
+    background: #6d28d9;
+    border-color: #6d28d9;
+    color: white;
+}
+
+.payment-btn.unpaid {
+    background: #64748b;
+    border-color: #64748b;
+    color: white;
+}
+
+.payment-btn.current {
+    box-shadow:
+        0 0 0 2px var(--panel),
+        0 0 0 4px #38bdf8;
+}
+
+.delivery-actions {
+    display: grid;
+    grid-template-columns: repeat(2, max-content);
+    gap: 7px;
+    align-items: center;
+}
+
+.delivery-form {
+    margin: 0;
+}
+
+.delivery-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    padding: 7px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 800;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.delivery-btn.current {
+    background: #0f766e;
+    border-color: #0f766e;
+    color: white;
+
+    box-shadow:
+        0 0 0 2px var(--panel),
+        0 0 0 4px #38bdf8;
+}
+
+.payment-btn:hover,
+.delivery-btn:hover {
+    opacity: 0.85;
+    transform: translateY(-1px);
+}
 
     .message {
         padding: 12px 15px;
@@ -334,8 +730,9 @@ ob_start();
                         <th>Item Total</th>
                         <th>Payment</th>
                         <th>Date</th>
-                        <th>Status</th>
-                        <th>Action</th>
+                       <th>Status</th>
+                       <th>Action</th>
+                       <th>Delivery Status</th>
                     </tr>
                 </thead>
 
@@ -345,7 +742,7 @@ ob_start();
 
                         <tr>
                             <td
-                                colspan="10"
+                                colspan="11"
                                 style="
                                     text-align:center;
                                     color:var(--muted);
@@ -360,31 +757,36 @@ ob_start();
                         <?php foreach ($orders as $order): ?>
 
                             <?php
-                            $status = strtolower(
-                                (string) $order['status']
-                            );
+                           $status = strtolower(
+    (string) $order['status']
+);
 
-                            $badgeClass = 'badge';
+$displayStatus =
+    $status === 'delivered'
+        ? 'Delivered'
+        : 'Pending';
 
-                            if ($status === 'delivered') {
+$badgeClass =
+    $status === 'delivered'
+        ? 'badge badge--ok'
+        : 'badge badge--warn';
 
-                                $badgeClass = 'badge badge--ok';
-                            } elseif (
-                                $status === 'pending' ||
-                                $status === 'cancelled'
-                            ) {
+                            $deliveryStatuses = [
+    'order_placed'     => 'Order Placed',
+    'processing'       => 'Processing',
+    'packed'           => 'Packed',
+    'shipped'          => 'Shipped',
+    'out_for_delivery' => 'Out for Delivery',
+    'delivered'        => 'Delivered'
+];
 
-                                $badgeClass = 'badge badge--warn';
-                            }
+$deliveryStatus = strtolower(
+    (string) ($order['delivery_status'] ?? 'order_placed')
+);
 
-                            $statuses = [
-                                'pending'    => 'Pending',
-                                'processing' => 'Processing',
-                                'paid'       => 'Paid',
-                                'shipped'    => 'Shipped',
-                                'delivered'  => 'Delivered',
-                                'cancelled'  => 'Cancelled'
-                            ];
+$paymentStatus = strtolower(
+    (string) ($order['payment_status'] ?? 'pending')
+);
                             ?>
 
                             <tr>
@@ -439,61 +841,131 @@ ob_start();
                                 </td>
 
                                 <td>
-                                    <span class="<?= $badgeClass ?>">
-                                        <?= e(
-                                            ucfirst(
-                                                (string) $order['status']
-                                            )
-                                        ) ?>
-                                    </span>
-                                </td>
+    <span class="<?= $badgeClass ?>">
+        <?= e($displayStatus) ?>
+    </span>
+</td>
+<td>
 
-                                <td>
+    <div class="payment-actions">
 
-                                    <div class="status-actions">
+        <form method="POST">
 
-                                        <?php foreach ($statuses as $statusValue => $statusLabel): ?>
+            <input
+                type="hidden"
+                name="csrf"
+                value="<?= e($csrf) ?>">
 
-                                            <form
-                                                method="POST"
-                                                class="status-form">
+            <input
+                type="hidden"
+                name="order_id"
+                value="<?= (int) $order['order_id'] ?>">
 
-                                                <input
-                                                    type="hidden"
-                                                    name="csrf"
-                                                    value="<?= e($csrf) ?>">
+            <input
+                type="hidden"
+                name="payment_status"
+                value="success">
 
-                                                <input
-                                                    type="hidden"
-                                                    name="order_id"
-                                                    value="<?= (int) $order['order_id'] ?>">
+            <button
+                type="submit"
+                name="update_payment_status"
+                class="payment-btn paid
+                <?= $paymentStatus === 'success'
+                    ? 'current'
+                    : ''
+                ?>">
 
-                                                <input
-                                                    type="hidden"
-                                                    name="status"
-                                                    value="<?= e($statusValue) ?>">
+                Paid
 
-                                                <button
-                                                    type="submit"
-                                                    name="update_status"
-                                                    class="
-                                                        status-btn
-                                                        <?= e($statusValue) ?>
-                                                        <?= $status === $statusValue
-                                                            ? 'current'
-                                                            : ''
-                                                        ?>
-                                                    ">
-                                                    <?= e($statusLabel) ?>
-                                                </button>
+            </button>
 
-                                            </form>
+        </form>
 
-                                        <?php endforeach; ?>
+        <form method="POST">
 
-                                    </div>
+            <input
+                type="hidden"
+                name="csrf"
+                value="<?= e($csrf) ?>">
 
-                                </td>
+            <input
+                type="hidden"
+                name="order_id"
+                value="<?= (int) $order['order_id'] ?>">
+
+            <input
+                type="hidden"
+                name="payment_status"
+                value="pending">
+
+            <button
+                type="submit"
+                name="update_payment_status"
+                class="payment-btn unpaid
+                <?= $paymentStatus !== 'success'
+                    ? 'current'
+                    : ''
+                ?>">
+
+                Unpaid
+
+            </button>
+
+        </form>
+
+    </div>
+
+</td>
+<td>
+
+    <div class="delivery-actions">
+
+        <?php foreach (
+            $deliveryStatuses
+            as $deliveryValue => $deliveryLabel
+        ): ?>
+
+            <form
+                method="POST"
+                class="delivery-form">
+
+                <input
+                    type="hidden"
+                    name="csrf"
+                    value="<?= e($csrf) ?>">
+
+                <input
+                    type="hidden"
+                    name="order_id"
+                    value="<?= (int) $order['order_id'] ?>">
+
+                <input
+                    type="hidden"
+                    name="delivery_status"
+                    value="<?= e($deliveryValue) ?>">
+
+                <button
+                    type="submit"
+                    name="update_delivery_status"
+                    class="
+                        delivery-btn
+                        <?= $deliveryStatus === $deliveryValue
+                            ? 'current'
+                            : ''
+                        ?>
+                    ">
+
+                    <?= e($deliveryLabel) ?>
+
+                </button>
+
+            </form>
+
+        <?php endforeach; ?>
+
+    </div>
+
+</td>
 
                             </tr>
 

@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
-session_start();
+require_once __DIR__ . '/auth.php';
+start_auth_session();
 require 'db.php';
 if (!isset($_SESSION['user_email'])) { header('Location: user_login.php'); exit(); }
 $user_email = $_SESSION['user_email'];
@@ -16,7 +17,12 @@ $stmt->close();
 
 if (!$order) { echo "Order not found."; exit(); }
 
-$it = $conn->prepare("SELECT name, unit_price, quantity, line_total FROM order_items WHERE order_id=?");
+$it = $conn->prepare("
+    SELECT p.name, oi.price AS unit_price, oi.quantity, (oi.price * oi.quantity) AS line_total
+    FROM order_items oi
+    INNER JOIN products p ON p.id = oi.product_id
+    WHERE oi.order_id=?
+");
 $it->bind_param("i", $order_id);
 $it->execute();
 $items = $it->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -26,8 +32,8 @@ $it->close();
 <meta charset="utf-8">
 <title>Order #<?= (int)$order_id ?></title>
 <h1>Order #<?= (int)$order_id ?></h1>
-<p>Payment: <?= htmlspecialchars($order['payment_method']) ?> (<?= htmlspecialchars($order['payment_status']) ?>)</p>
-<p>Status: <?= htmlspecialchars($order['order_status']) ?></p>
+<p>Payment: <?= htmlspecialchars($order['payment_method'] === 'online' ? 'Online Payment' : 'Cash on Delivery') ?> (<?= htmlspecialchars($order['payment_status'] ?? 'pending') ?>)</p>
+<p>Status: <?= htmlspecialchars($order['status']) ?></p>
 <p>Date: <?= htmlspecialchars($order['created_at']) ?></p>
 
 <table border="1" cellpadding="8" cellspacing="0">
@@ -42,7 +48,6 @@ $it->close();
   <?php endforeach; ?>
   <tr><td colspan="3" align="right"><b>Subtotal</b></td><td><?= number_format((float)$order['subtotal'], 2) ?></td></tr>
   <tr><td colspan="3" align="right"><b>Shipping</b></td><td><?= number_format((float)$order['shipping'], 2) ?></td></tr>
-  <tr><td colspan="3" align="right"><b>Tax</b></td><td><?= number_format((float)$order['tax'], 2) ?></td></tr>
   <tr><td colspan="3" align="right"><b>Grand Total</b></td><td><?= number_format((float)$order['grand_total'], 2) ?></td></tr>
 </table>
 

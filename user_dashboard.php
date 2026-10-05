@@ -1,5 +1,6 @@
 <?php
-session_start();
+require_once __DIR__ . '/auth.php';
+start_auth_session();
 require 'db.php';
 
 // If not logged in, redirect to login page
@@ -280,7 +281,7 @@ $products_result = $conn->query("SELECT * FROM products");
 <body>
   <!-- Header -->
   <div class="header">
-    <h1>Welcome to Dress at Your Door!</h1>
+    <h1>Welcome to PICK UP!</h1>
     <div class="icons">
       <!-- Cart Icon -->
       <a href="cart.php" class="cart-icon" aria-label="Cart">🛒</a>
@@ -342,6 +343,9 @@ $products_result = $conn->query("SELECT * FROM products");
 
   <!-- Dropdown/Submenu click-to-toggle JS -->
   <script>
+    localStorage.setItem('dyod_user_logged_in', '1');
+    localStorage.setItem('dyod_user_email', <?= json_encode((string) $user_email) ?>);
+
     document.addEventListener('DOMContentLoaded', () => {
       const dropdown = document.querySelector('.dropdown');
       const dropbtn = dropdown?.querySelector('.dropbtn');
@@ -419,6 +423,7 @@ $products_result = $conn->query("SELECT * FROM products");
       });
     });
   </script>
+  <?php include 'chat_widget.php'; ?>
 </body>
 
 </html>

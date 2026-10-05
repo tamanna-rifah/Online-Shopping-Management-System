@@ -320,6 +320,7 @@ if (isset($_GET['category'])) {
     <footer>
         © <?= date("Y") ?> Dress at Your Door | All Rights Reserved
     </footer>
+    <?php include 'chat_widget.php'; ?>
 </body>
 
 </html>

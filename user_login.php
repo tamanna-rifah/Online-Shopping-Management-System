@@ -1,8 +1,14 @@
 <?php
-session_start();
+require_once __DIR__ . '/auth.php';
+start_auth_session();
 require 'db.php';
 
 $error_message = '';
+
+if (isset($_SESSION['user_email'])) {
+    header('Location: user_dashboard.php');
+    exit();
+}
 
 // Genera token CSRF si no existe
 if (empty($_SESSION['csrf_token'])) {
@@ -31,6 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $query->fetch();
 
             if ($query->num_rows > 0 && password_verify($password, $db_password)) {
+                session_regenerate_id(true);
                 $_SESSION['user_email'] = $db_email;
 
                 // Redirect to Add to Cart if coming from cart
@@ -181,5 +188,11 @@ function togglePw(e) {
     }
 }
 </script>
+<?php if (isset($_SESSION['user_email'])): ?>
+<script>
+localStorage.setItem('dyod_user_logged_in', '1');
+localStorage.setItem('dyod_user_email', <?= json_encode((string) $_SESSION['user_email']) ?>);
+</script>
+<?php endif; ?>
 </body>
 </html>

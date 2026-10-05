@@ -595,7 +595,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                             Already applied?
 
-                            <a href="seller_login.php">
+                            <a href="login.php">
                                 Seller Sign In
                             </a>
 

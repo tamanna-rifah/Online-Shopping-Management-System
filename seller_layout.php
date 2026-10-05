@@ -682,6 +682,23 @@ $currentPage = basename($_SERVER['PHP_SELF']);
 
 
                 <a
+                    href="seller_inventory.php"
+
+                    <?= $currentPage === 'seller_inventory.php'
+                        ? 'aria-current="page"'
+                        : ''
+                    ?>>
+
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M4 4h16v4H4V4zm0 6h16v10H4V10zm4 3v2h8v-2H8z" />
+                    </svg>
+
+                    Inventory
+
+                </a>
+
+
+                <a
                     href="seller_orders.php"
 
                     <?= $currentPage === 'seller_orders.php'

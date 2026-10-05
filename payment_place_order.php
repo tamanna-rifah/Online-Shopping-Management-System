@@ -1,22 +1,24 @@
 <?php
-
 declare(strict_types=1);
-session_start();
-require 'db.php';
+require_once __DIR__ . '/auth.php';
+start_auth_session();
 
-// ---------- Auth Guard ----------
+require 'db.php';
+require_once __DIR__ . '/delivery_helper.php';
+require_once __DIR__ . '/sslcommerz_api.php';
+require_once __DIR__ . '/sslcommerz_config.php';
+
 if (!isset($_SESSION['user_email'])) {
     header('Location: user_login.php');
     exit();
 }
+
 $user_email = $_SESSION['user_email'];
 
-// ---------- CSRF ----------
-if (!isset($_POST['csrf']) || !hash_equals($_SESSION['pay_csrf'] ?? '', $_POST['csrf'])) {
+if (!isset($_POST['csrf']) || !hash_equals($_SESSION['pay_csrf'] ?? '', (string) $_POST['csrf'])) {
     die("<p>Invalid request. <a href='cart.php'>Back to cart</a></p>");
 }
 
-// ---------- Validate selected items ----------
 if (!isset($_POST['selected_items']) || !is_array($_POST['selected_items'])) {
     die("<p>No items selected. <a href='cart.php'>Back to cart</a></p>");
 }
@@ -30,25 +32,27 @@ if (!$selected_items) {
     die("<p>No valid items selected. <a href='cart.php'>Back to cart</a></p>");
 }
 
-// ---------- Validate payment method ----------
 $valid_methods = ['cod', 'online'];
-if (!isset($_POST['payment_method']) || !in_array($_POST['payment_method'], $valid_methods, true)) {
+$payment_method = strtolower(trim((string) ($_POST['payment_method'] ?? '')));
+if (!in_array($payment_method, $valid_methods, true)) {
     die("<p>Please select a valid payment method. <a href='payment.php'>Back to payment</a></p>");
 }
-$payment_method = $_POST['payment_method'];
 
-// ---------- Re-query selected items ----------
 $placeholders = implode(',', array_fill(0, count($selected_items), '?'));
-$sql = "SELECT c.id AS cart_id, c.product_id, p.name, p.price, c.quantity, (p.price*c.quantity) AS line_total 
-        FROM cart c 
-        JOIN products p ON c.product_id = p.id 
-        WHERE c.user_email = ? AND c.id IN ($placeholders)";
+$sql = "
+    SELECT c.id AS cart_id, c.product_id, p.name, p.price, c.quantity, (p.price*c.quantity) AS line_total
+    FROM cart c
+    JOIN products p ON c.product_id = p.id
+    WHERE c.user_email = ? AND c.id IN ($placeholders)
+";
 $stmt = $conn->prepare($sql);
-if (!$stmt) die("Database error: " . $conn->error);
+if (!$stmt) {
+    die('Database error: ' . htmlspecialchars($conn->error, ENT_QUOTES, 'UTF-8'));
+}
 
-// Bind params dynamically
 $types = 's' . str_repeat('i', count($selected_items));
 $params = array_merge([$user_email], $selected_items);
+$bind_names = [];
 $bind_names[] = &$types;
 foreach ($params as $key => $value) {
     $bind_names[] = &$params[$key];
@@ -56,231 +60,243 @@ foreach ($params as $key => $value) {
 call_user_func_array([$stmt, 'bind_param'], $bind_names);
 
 $stmt->execute();
-$result = $stmt->get_result();
-$items = $result->fetch_all(MYSQLI_ASSOC);
+$items = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
 $stmt->close();
 
-if (!$items) die("<p>No matching items found. <a href='cart.php'>Back to cart</a></p>");
+if (!$items) {
+    die("<p>No matching items found. <a href='cart.php'>Back to cart</a></p>");
+}
 
-// ---------- Calculate totals ----------
 $subtotal = 0.0;
-foreach ($items as $r) $subtotal += (float)$r['line_total'];
+foreach ($items as $item) {
+    $subtotal += (float) $item['line_total'];
+}
 
-$TAX_RATE = 0.0;
-$FLAT_SHIPPING = 60.0;
-$shipping = $subtotal > 0 ? $FLAT_SHIPPING : 0.0;
-$tax = $subtotal * $TAX_RATE;
+$tax_rate = 0.0;
+$flat_shipping = 60.0;
+$shipping = $subtotal > 0 ? $flat_shipping : 0.0;
+$tax = $subtotal * $tax_rate;
 $grand_total = $subtotal + $shipping + $tax;
 
-// ---------- Insert order ----------
-$order_status = $payment_method === 'cod' ? 'Pending' : 'Awaiting Payment';
-$insert_order = $conn->prepare(
-    "INSERT INTO orders (user_email, grand_total, payment_method, status, created_at) VALUES (?, ?, ?, ?, NOW())"
-);
-if (!$insert_order) die("Prepare failed: " . $conn->error);
+$customer_name = '';
+$customer_phone = '';
+$customer_address = '';
+$customer_city = '';
+$customer_country = 'Bangladesh';
 
-$insert_order->bind_param("sdss", $user_email, $grand_total, $payment_method, $order_status);
-$insert_order->execute();
-$order_id = $insert_order->insert_id;
-if (!$order_id) die("Insert order failed: " . $insert_order->error);
-$insert_order->close();
+$user_stmt = $conn->prepare('SELECT name, phone, location FROM users WHERE email = ? LIMIT 1');
+if ($user_stmt) {
+    $user_stmt->bind_param('s', $user_email);
+    $user_stmt->execute();
+    $user = $user_stmt->get_result()->fetch_assoc();
+    $user_stmt->close();
 
-// ---------- Insert order items ----------
-$insert_item = $conn->prepare("INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)");
-if (!$insert_item) die("Prepare failed: " . $conn->error);
-
-foreach ($items as $r) {
-    $insert_item->bind_param("iiid", $order_id, $r['product_id'], $r['quantity'], $r['price']);
-    $insert_item->execute();
-}
-$insert_item->close();
-
-// ---------- Remove purchased items from cart ----------
-if ($selected_items) {
-    $placeholders = implode(',', array_fill(0, count($selected_items), '?'));
-    $delete_stmt = $conn->prepare("DELETE FROM cart WHERE user_email = ? AND id IN ($placeholders)");
-    if (!$delete_stmt) die("Prepare failed: " . $conn->error);
-
-    $types = 's' . str_repeat('i', count($selected_items));
-    $params = array_merge([$user_email], $selected_items);
-    $bind_names = [];
-    $bind_names[] = &$types;
-    foreach ($params as $key => $value) {
-        $bind_names[] = &$params[$key];
+    if ($user) {
+        $customer_name = trim((string) ($user['name'] ?? ''));
+        $customer_phone = trim((string) ($user['phone'] ?? ''));
+        $customer_address = trim((string) ($user['location'] ?? ''));
+        $customer_city = $customer_address !== '' ? $customer_address : 'Dhaka';
     }
-    call_user_func_array([$delete_stmt, 'bind_param'], $bind_names);
-
-    $delete_stmt->execute();
-    $delete_stmt->close();
 }
 
-// ---------- Helper ----------
-function bdt($n): string
-{
-    return number_format((float)$n, 2) . ' BDT';
+if ($customer_name === '') {
+    $customer_name = $user_email;
 }
 
-// ---------- HTML (Order Confirmation) ----------
-?>
-<!DOCTYPE html>
-<html lang="en">
+$conn->begin_transaction();
 
-<head>
-    <meta charset="UTF-8">
-    <title>Order Confirmation</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: #f5f7fb;
-            color: #1f2937;
-            margin: 0;
-            padding: 0;
+try {
+    $order_status = 'pending';
+    $payment_status = 'pending';
+    $verified = $payment_method === 'cod' ? 'No' : 'No';
+
+    $insert_order = $conn->prepare("
+    INSERT INTO orders (
+        user_email,
+        subtotal,
+        shipping,
+        grand_total,
+        payment_method,
+        payment_status,
+        status,
+        delivery_status,
+        created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'order_placed', NOW())
+");
+    if (!$insert_order) {
+        throw new RuntimeException('Prepare failed: ' . $conn->error);
+    }
+
+    $insert_order->bind_param('sdddsss', $user_email, $subtotal, $shipping, $grand_total, $payment_method, $payment_status, $order_status);
+    $insert_order->execute();
+    $order_id = (int) $insert_order->insert_id;
+    $insert_order->close();
+    add_tracking_event(
+    $conn,
+    $order_id,
+    'order_placed',
+    'Order placed successfully.'
+);
+
+    $insert_item = $conn->prepare('INSERT INTO order_items (order_id, product_id, quantity, price) VALUES (?, ?, ?, ?)');
+    if (!$insert_item) {
+        throw new RuntimeException('Prepare failed: ' . $conn->error);
+    }
+
+    foreach ($items as $item) {
+        $insert_item->bind_param('iiid', $order_id, $item['product_id'], $item['quantity'], $item['price']);
+        $insert_item->execute();
+    }
+    $insert_item->close();
+
+    $initial_transaction_id = $payment_method === 'cod' ? 'COD-' . $order_id : null;
+    $payment_note = $payment_method === 'cod' ? 'Cash on Delivery order created.' : 'SSLCommerz payment initialized.';
+
+    $insert_payment = $conn->prepare("
+        INSERT INTO payments (
+            order_id, user_email, method, payment_id, transaction_id, trx_id,
+            payment_note, verified, amount, status,
+            customer_name, customer_phone, customer_address, gateway_response, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+    ");
+    if (!$insert_payment) {
+        throw new RuntimeException('Prepare failed: ' . $conn->error);
+    }
+
+    $empty_payment_id = null;
+    $empty_trx_id = null;
+    $empty_gateway_response = null;
+
+    $insert_payment->bind_param(
+        'isssssssdsssss',
+        $order_id,
+        $user_email,
+        $payment_method,
+        $empty_payment_id,
+        $initial_transaction_id,
+        $empty_trx_id,
+        $payment_note,
+        $verified,
+        $grand_total,
+        $payment_status,
+        $customer_name,
+        $customer_phone,
+        $customer_address,
+        $empty_gateway_response
+    );
+    $insert_payment->execute();
+    $payment_row_id = (int) $insert_payment->insert_id;
+    $insert_payment->close();
+
+    if ($payment_method === 'cod') {
+        $delete_stmt = $conn->prepare("DELETE FROM cart WHERE user_email = ? AND id IN ($placeholders)");
+        if (!$delete_stmt) {
+            throw new RuntimeException('Prepare failed: ' . $conn->error);
         }
 
-        .wrapper {
-            max-width: 800px;
-            margin: 40px auto;
-            padding: 0 16px;
+        $delete_types = 's' . str_repeat('i', count($selected_items));
+        $delete_params = array_merge([$user_email], $selected_items);
+        $delete_bind = [];
+        $delete_bind[] = &$delete_types;
+        foreach ($delete_params as $key => $value) {
+            $delete_bind[] = &$delete_params[$key];
         }
+        call_user_func_array([$delete_stmt, 'bind_param'], $delete_bind);
+        $delete_stmt->execute();
+        $delete_stmt->close();
 
-        .card {
-            background: #fff;
-            padding: 20px;
-            border-radius: 14px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, .06);
+        $conn->commit();
+        unset($_SESSION['pay_csrf']);
+
+        header('Location: my_orders.php?order_placed=' . $order_id);
+        exit();
+    }
+
+    $transaction_reference = 'ORD-' . $order_id . '-PAY-' . $payment_row_id;
+    $callbackBase = sslcommerz_base_url();
+    $create_response = sslcommerz_init_payment([
+        'total_amount' => number_format($grand_total, 2, '.', ''),
+        'currency' => 'BDT',
+        'tran_id' => $transaction_reference,
+        'success_url' => $callbackBase . '/payment_success.php?order_id=' . $order_id . '&payment_row_id=' . $payment_row_id,
+        'fail_url' => $callbackBase . '/payment_fail.php?order_id=' . $order_id . '&payment_row_id=' . $payment_row_id,
+        'cancel_url' => $callbackBase . '/payment_cancel.php?order_id=' . $order_id . '&payment_row_id=' . $payment_row_id,
+        'ipn_url' => $callbackBase . '/payment_success.php?order_id=' . $order_id . '&payment_row_id=' . $payment_row_id . '&ipn=1',
+        'cus_name' => $customer_name,
+        'cus_email' => $user_email,
+        'cus_add1' => $customer_address,
+        'cus_city' => $customer_city !== '' ? $customer_city : 'Dhaka',
+        'cus_country' => $customer_country,
+        'cus_phone' => $customer_phone,
+        'shipping_method' => 'NO',
+        'product_name' => 'Order #' . $order_id,
+        'product_category' => 'Online Shopping',
+        'product_profile' => 'general',
+        'value_a' => (string) $order_id,
+        'value_b' => (string) $payment_row_id,
+    ]);
+
+    $gateway_payment_id = (string) ($create_response['sessionkey'] ?? $create_response['tran_id'] ?? '');
+    $gateway_url = (string) ($create_response['GatewayPageURL'] ?? '');
+
+    if ($gateway_payment_id === '' || $gateway_url === '') {
+        throw new RuntimeException('SSLCommerz response is missing session or gateway URL.');
+    }
+
+    $gateway_response_json = json_encode($create_response, JSON_UNESCAPED_SLASHES);
+    $update_payment = $conn->prepare("
+        UPDATE payments
+        SET payment_id = ?, transaction_id = ?, payment_note = ?, gateway_response = ?, updated_at = NOW()
+        WHERE id = ? AND order_id = ?
+    ");
+    if (!$update_payment) {
+        throw new RuntimeException('Prepare failed: ' . $conn->error);
+    }
+
+    $payment_note = 'SSLCommerz payment created. Redirecting customer to gateway.';
+    $update_payment->bind_param(
+        'ssssii',
+        $gateway_payment_id,
+        $transaction_reference,
+        $payment_note,
+        $gateway_response_json,
+        $payment_row_id,
+        $order_id
+    );
+    $update_payment->execute();
+    $update_payment->close();
+
+    $conn->commit();
+    $_SESSION['sslcommerz_last_order_id'] = $order_id;
+    $_SESSION['sslcommerz_last_payment_row_id'] = $payment_row_id;
+
+    header('Location: ' . $gateway_url);
+    exit();
+} catch (Throwable $e) {
+    $conn->rollback();
+
+    if (isset($order_id) && $order_id > 0) {
+        $safe_message = substr($e->getMessage(), 0, 240);
+        $stmt = $conn->prepare("
+            UPDATE orders o
+            LEFT JOIN payments p ON p.order_id = o.id
+            SET o.status = 'cancelled',
+                o.payment_status = 'failed',
+                p.status = 'failed',
+                p.payment_note = ?,
+                p.gateway_response = ?,
+                p.updated_at = NOW()
+            WHERE o.id = ?
+        ");
+        if ($stmt) {
+            $response = json_encode(['error' => $e->getMessage()], JSON_UNESCAPED_SLASHES);
+            $stmt->bind_param('ssi', $safe_message, $response, $order_id);
+            $stmt->execute();
+            $stmt->close();
         }
+    }
 
-        h1 {
-            color: #28a745;
-            margin-bottom: 16px;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 16px;
-        }
-
-        th,
-        td {
-            padding: 12px;
-            text-align: left;
-            border-bottom: 1px solid #eef2f7;
-        }
-
-        .summary {
-            display: grid;
-            grid-template-columns: 1fr auto;
-            gap: 6px 12px;
-            margin-top: 12px;
-        }
-
-        .summary .label {
-            color: #6b7280;
-        }
-
-        .summary .value {
-            justify-self: end;
-            font-weight: 700;
-        }
-
-        .btn {
-            padding: 12px 18px;
-            border: none;
-            border-radius: 12px;
-            font-weight: 700;
-            font-size: 16px;
-            text-decoration: none;
-            cursor: pointer;
-        }
-
-        .btn-success {
-            background: #28a745;
-            color: #fff;
-        }
-
-        .btn-primary {
-            background: #007bff;
-            color: #fff;
-        }
-
-        .status {
-            padding: 8px 12px;
-            border-radius: 12px;
-            display: inline-block;
-            font-weight: 700;
-        }
-
-        .status-paid {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .status-pending {
-            background: #fef3c7;
-            color: #92400e;
-        }
-
-        .note {
-            font-size: 13px;
-            color: #6b7280;
-        }
-    </style>
-</head>
-
-<body>
-    <div class="wrapper">
-        <div class="card">
-            <h1>Thank You! Your Order is Processing</h1>
-            <h2>Order #<?= htmlspecialchars((string)$order_id, ENT_QUOTES) ?></h2>
-            <p>Payment Method: <strong><?= htmlspecialchars(strtoupper($payment_method), ENT_QUOTES) ?></strong> |
-                Status: <span class="status <?= $payment_method === 'cod' ? 'status-pending' : 'status-paid' ?>"><?= htmlspecialchars($order_status, ENT_QUOTES) ?></span>
-            </p>
-
-            <table aria-label="Order Items">
-                <thead>
-                    <tr>
-                        <th>Product</th>
-                        <th>Price</th>
-                        <th>Qty</th>
-                        <th>Line Total</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach ($items as $item): ?>
-                        <tr>
-                            <td><?= htmlspecialchars($item['name'], ENT_QUOTES) ?></td>
-                            <td><?= bdt((float)$item['price']) ?></td>
-                            <td><?= (int)$item['quantity'] ?></td>
-                            <td><?= bdt((float)$item['line_total']) ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-
-            <div class="summary">
-                <div class="label">Subtotal</div>
-                <div class="value"><?= bdt($subtotal) ?></div>
-                <div class="label">Shipping</div>
-                <div class="value"><?= bdt($shipping) ?></div>
-                <div class="label">VAT (0%)</div>
-                <div class="value"><?= bdt($tax) ?></div>
-                <div class="label" style="font-size:18px;">Grand Total</div>
-                <div class="value" style="font-size:18px;"><?= bdt($grand_total) ?></div>
-            </div>
-
-            <div style="margin-top:20px;">
-                <?php if ($payment_method === 'online'): ?>
-                    <a class="btn btn-success" href="online_payment_gateway.php?order_id=<?= $order_id ?>&amount=<?= $grand_total ?>">Pay Now Online</a>
-                    <a class="btn btn-primary" href="user_dashboard.php">Continue Shopping</a>
-
-                <?php else: ?>
-                    <a class="btn btn-primary" href="user_dashboard.php">Continue Shopping</a>
-                <?php endif; ?>
-            </div>
-            <p class="note" style="margin-top:12px;">You will receive a confirmation email shortly.</p>
-        </div>
-    </div>
-</body>
-
-</html>
+    http_response_code(500);
+    echo '<p>Order failed: ' . htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8') . " <a href='cart.php'>Back to cart</a></p>";
+}

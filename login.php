@@ -3,10 +3,16 @@
 
 declare(strict_types=1);
 
-session_start();
+require_once __DIR__ . '/auth.php';
+start_auth_session();
 require_once __DIR__ . '/db.php';
 
 $error_message = '';
+
+if (isset($_SESSION['user_email']) && ($_GET['role'] ?? '') !== 'seller' && ($_GET['role'] ?? '') !== 'admin') {
+    header('Location: user_dashboard.php');
+    exit();
+}
 
 /* =========================================
    CSRF TOKEN
@@ -802,7 +808,7 @@ $enteredIdentity = $_POST['identity'] ?? '';
     <div class="header">
 
         <h1>
-            Dress at Your Door!
+            PICK UP!!!
         </h1>
 
 
